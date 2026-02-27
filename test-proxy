@@ -1,0 +1,146 @@
+#!/bin/bash
+#
+# test-proxy - 代理连通性测试脚本（硬编码版）
+# 用法: ./test-proxy
+#
+
+# 不再使用 -u，避免未绑定变量报错
+set -eo pipefail
+
+# ============ 硬编码代理配置 ============
+readonly HTTP_PROXY_ADDR="http://192.168.10.254:20171"
+readonly HTTPS_PROXY_ADDR="http://192.168.10.254:20171"
+readonly SOCKS5_PROXY_ADDR="socks5://192.168.10.254:20170"
+readonly TARGET_URL="https://httpbin.org/ip"
+readonly TIMEOUT=10
+
+# ============ 颜色输出 ============
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+GRAY='\033[0;90m'
+NC='\033[0m'
+
+# ============ 工具函数 ============
+log_info()    { echo -e "${BLUE}[ℹ]${NC} $*"; }
+log_success() { echo -e "${GREEN}[✓]${NC} $*"; }
+log_warn()    { echo -e "${YELLOW}[⚠]${NC} $*"; }
+log_error()   { echo -e "${RED}[✗]${NC} $*" >&2; }
+
+# ============ 测试函数 ============
+
+# 获取本机 IP（不走代理）
+get_native_ip() {
+    curl -s --connect-timeout "$TIMEOUT" "$TARGET_URL" 2>/dev/null | \
+        grep -oP '"origin":\s*"\K[^"]+' || echo "N/A"
+}
+
+# 通过 HTTP 代理获取 IP
+test_http_proxy() {
+    local proxy_addr="$1"
+    echo -e "\n${BLUE}─────────────────────────────${NC}"
+    echo -e "${BLUE}测试：HTTP 代理${NC}"
+    echo -e "${GRAY}地址：$proxy_addr${NC}"
+
+    local start_time=$(date +%s)
+    local ip=$(curl -s --connect-timeout "$TIMEOUT" -x "$proxy_addr" "$TARGET_URL" 2>/dev/null | \
+        grep -oP '"origin":\s*"\K[^"]+')
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+
+    if [[ -z "$ip" ]]; then
+        log_error "连接超时或失败 (${duration}s)"
+        return 1
+    fi
+
+    log_success "出口 IP: $ip (${duration}s)"
+    return 0
+}
+
+# 通过 SOCKS5 代理获取 IP
+test_socks5_proxy() {
+    local proxy_addr="$1"
+    echo -e "\n${BLUE}─────────────────────────────${NC}"
+    echo -e "${BLUE}测试：SOCKS5 代理${NC}"
+    echo -e "${GRAY}地址：$proxy_addr${NC}"
+
+    local start_time=$(date +%s)
+    # socks5h 表示 DNS 也走代理，避免 DNS 泄露
+    local ip=$(curl -s --connect-timeout "$TIMEOUT" -x "socks5h://${proxy_addr#socks5://}" "$TARGET_URL" 2>/dev/null | \
+        grep -oP '"origin":\s*"\K[^"]+')
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+
+    if [[ -z "$ip" ]]; then
+        log_error "连接超时或失败 (${duration}s)"
+        return 1
+    fi
+
+    log_success "出口 IP: $ip (${duration}s)"
+    return 0
+}
+
+# ============ 主流程 ============
+main() {
+    echo -e "${BLUE}🔍 代理测试工具${NC}"
+    echo -e "${GRAY}目标：$TARGET_URL | 超时：${TIMEOUT}s${NC}"
+
+    # 1. 获取本机 IP 基准
+    echo -e "\n${BLUE}─────────────────────────────${NC}"
+    echo -e "${BLUE}基准：本机出口 IP${NC}"
+    local native_ip=$(get_native_ip)
+    if [[ "$native_ip" == "N/A" ]]; then
+        log_warn "无法获取本机 IP，请检查网络连接"
+    else
+        log_info "本机 IP: $native_ip"
+    fi
+
+    local pass_count=0
+    local total_count=0
+
+    # 2. 测试 HTTP 代理
+    ((total_count++)) || true
+    if test_http_proxy "$HTTP_PROXY_ADDR"; then
+        ((pass_count++)) || true
+        # 对比 IP 判断代理是否真正生效
+        local http_ip=$(curl -s --connect-timeout "$TIMEOUT" -x "$HTTP_PROXY_ADDR" "$TARGET_URL" 2>/dev/null | \
+            grep -oP '"origin":\s*"\K[^"]+')
+        if [[ -n "$http_ip" && "$http_ip" != "$native_ip" ]]; then
+            log_success "✓ 代理生效 (与本机 IP 不同)"
+        else
+            log_warn "? 出口 IP 与本机相同，代理可能未生效"
+        fi
+    fi
+
+    # 3. 测试 SOCKS5 代理
+    ((total_count++)) || true
+    if test_socks5_proxy "$SOCKS5_PROXY_ADDR"; then
+        ((pass_count++)) || true
+        local socks_ip=$(curl -s --connect-timeout "$TIMEOUT" -x "socks5h://${SOCKS5_PROXY_ADDR#socks5://}" "$TARGET_URL" 2>/dev/null | \
+            grep -oP '"origin":\s*"\K[^"]+')
+        if [[ -n "$socks_ip" && "$socks_ip" != "$native_ip" ]]; then
+            log_success "✓ 代理生效 (与本机 IP 不同)"
+        else
+            log_warn "? 出口 IP 与本机相同，代理可能未生效"
+        fi
+    fi
+
+    # 4. 总结报告
+    echo -e "\n${BLUE}═════════════════════════════${NC}"
+    echo -e "${GREEN}📊 测试完成${NC}"
+    echo -e "通过：${GREEN}$pass_count${NC} / $total_count"
+
+    if [[ $pass_count -eq $total_count ]]; then
+        echo -e "${GREEN}🎉 所有代理配置正常工作！${NC}"
+        exit 0
+    elif [[ $pass_count -gt 0 ]]; then
+        echo -e "${YELLOW}⚠️  部分代理配置异常${NC}"
+        exit 2
+    else
+        echo -e "${RED}❌ 所有代理测试失败${NC}"
+        exit 3
+    fi
+}
+
+main "$@"
