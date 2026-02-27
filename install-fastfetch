@@ -1,0 +1,83 @@
+#!/bin/bash
+#
+# install-fastfetch - 在 Ubuntu/Linux 上安装 fastfetch
+# 用法: ./install-fastfetch [--no-apt]
+#   --no-apt  跳过 apt，直接从 GitHub 下载二进制（适用于旧版 Ubuntu）
+#
+
+set -e
+
+INSTALL_PREFIX="${INSTALL_PREFIX:-/usr/local}"
+BIN_DIR="$INSTALL_PREFIX/bin"
+RELEASE_URL="https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-amd64.tar.gz"
+USE_APT=true
+
+for arg in "$@"; do
+  case "$arg" in
+    --no-apt) USE_APT=false ;;
+    -h|--help)
+      echo "用法: $0 [--no-apt]"
+      echo "  --no-apt  不从 apt 安装，直接下载 GitHub 发布包（适用于 Ubuntu 24.04 及更早）"
+      exit 0
+      ;;
+  esac
+done
+
+# 已安装则跳过
+if command -v fastfetch &>/dev/null; then
+  echo "fastfetch 已安装: $(command -v fastfetch) ($(fastfetch --version 2>/dev/null || true))"
+  exit 0
+fi
+
+echo "[*] 安装 fastfetch ..."
+
+if [[ "$USE_APT" == true ]]; then
+  if apt-get install -y fastfetch 2>/dev/null; then
+    echo "[✓] 已通过 apt 安装 fastfetch"
+    fastfetch --version 2>/dev/null || true
+    exit 0
+  fi
+  echo "[!] apt 安装失败或未提供 fastfetch，尝试从 GitHub 安装 ..."
+fi
+
+# 需要 curl 或 wget
+if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
+  echo "[✗] 需要 curl 或 wget 才能下载，请先安装其一。" >&2
+  exit 1
+fi
+
+TMP_DIR=$(mktemp -d)
+trap "rm -rf '$TMP_DIR'" EXIT
+
+echo "[*] 下载 $RELEASE_URL ..."
+if command -v curl &>/dev/null; then
+  curl -sSL -o "$TMP_DIR/fastfetch.tar.gz" "$RELEASE_URL"
+else
+  wget -q -O "$TMP_DIR/fastfetch.tar.gz" "$RELEASE_URL"
+fi
+
+if [[ ! -s "$TMP_DIR/fastfetch.tar.gz" ]]; then
+  echo "[✗] 下载失败或文件为空" >&2
+  exit 1
+fi
+
+echo "[*] 解压并安装到 $BIN_DIR ..."
+sudo mkdir -p "$BIN_DIR"
+sudo tar xf "$TMP_DIR/fastfetch.tar.gz" -C "$TMP_DIR"
+# 发布包结构: fastfetch-linux-amd64/usr/bin/fastfetch
+if [[ -f "$TMP_DIR/fastfetch-linux-amd64/usr/bin/fastfetch" ]]; then
+  sudo cp "$TMP_DIR/fastfetch-linux-amd64/usr/bin/fastfetch" "$BIN_DIR/"
+elif [[ -f "$TMP_DIR/fastfetch" ]]; then
+  sudo cp "$TMP_DIR/fastfetch" "$BIN_DIR/"
+else
+  # 兼容可能的目录结构
+  sudo find "$TMP_DIR" -name fastfetch -type f -exec cp {} "$BIN_DIR/" \;
+fi
+
+if ! command -v fastfetch &>/dev/null; then
+  echo "[!] 请确保 $BIN_DIR 在 PATH 中，例如：" >&2
+  echo "    export PATH=\"$BIN_DIR:\$PATH\"" >&2
+fi
+
+echo "[✓] fastfetch 安装完成"
+fastfetch --version 2>/dev/null || true
