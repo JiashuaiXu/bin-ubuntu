@@ -1,0 +1,71 @@
+#!/bin/bash
+#
+# download - 按 URL 下载文件，支持 GitHub blob 自动转 raw
+# 用法: download <url> [输出文件名]
+#       download -x <url>   # 下载后 chmod +x（适合脚本）
+#
+
+set -e
+
+CHMOD_X=0
+URL=""
+OUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -x|--executable)
+      CHMOD_X=1
+      shift
+      ;;
+    -h|--help)
+      echo "用法: download [-x] <url> [输出文件名]"
+      echo "  -x  下载后 chmod +x（用于脚本）"
+      echo "  若省略输出文件名，则使用 URL 路径最后一段"
+      echo "  GitHub 页面链接（含 blob）会自动转为 raw 下载"
+      exit 0
+      ;;
+    *)
+      if [[ -z "$URL" ]]; then
+        URL="$1"
+      else
+        OUT="$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$URL" ]]; then
+  echo "用法: download [-x] <url> [输出文件名]" >&2
+  exit 1
+fi
+
+# GitHub blob -> raw（仅替换一次）
+if [[ "$URL" == *"github.com"*"/blob/"* ]]; then
+  URL="${URL//\/blob\//\/raw\/}"
+fi
+
+# 未指定输出名则从 URL 取
+if [[ -z "$OUT" ]]; then
+  OUT="${URL##*/}"
+  # 去掉 ? 及后续（部分 CDN 带 query）
+  OUT="${OUT%%\?*}"
+fi
+
+if ! command -v curl &>/dev/null; then
+  if command -v wget &>/dev/null; then
+    wget -q -O "$OUT" "$URL"
+  else
+    echo "需要 curl 或 wget" >&2
+    exit 1
+  fi
+else
+  curl -fSL -o "$OUT" "$URL"
+fi
+
+if [[ $CHMOD_X -eq 1 ]]; then
+  chmod +x "$OUT"
+  echo "已下载并赋予执行权限: $OUT"
+else
+  echo "已下载: $OUT"
+fi
