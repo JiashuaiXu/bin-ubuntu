@@ -246,22 +246,6 @@ install_claude_code() {
     fi
 }
 
-verify_claude() {
-    log_info "验证 Claude Code..."
-    if command_exists claude; then
-        local ver
-        ver=$(claude --version 2>/dev/null || echo "unknown")
-        log_success "Claude Code v$ver 就绪"
-        return 0
-    else
-        log_error "claude 命令未找到，请检查:"
-        echo -e "  • npm 全局安装路径是否在 \$PATH 中"
-        echo -e "  • 执行: echo \$PATH"
-        echo -e "  • 尝试: source ~/.bashrc 或重启终端"
-        return 1
-    fi
-}
-
 # =============================================================================
 # API Key 配置
 # =============================================================================
@@ -459,20 +443,17 @@ main() {
     # 3. 安装 Claude Code
     install_claude_code || exit 1
     
-    # 4. 验证安装
-    verify_claude || exit 1
-    
-    # 5. API 配置（如果提供了 Key）
+    # 4. API 配置（如果提供了 Key）
     if [[ -n "$API_KEY" ]]; then
         configure_api_key "$API_KEY"
         configure_env_vars
     fi
     
-    # 6. 可选组件（非 CI 模式）
+    # 5. 可选组件（非 CI 模式）
     install_statusline_plugin
     setup_stream_relay_alias
     
-    # 7. 完成提示
+    # 6. 完成提示
     show_usage_tips
 }
 
