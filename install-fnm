@@ -1,0 +1,46 @@
+#!/bin/bash
+#
+# install-fnm - 安装 fnm (Fast Node Manager)
+# 用法: install-fnm [--install-dir DIR] [--skip-shell]
+#       需要代理时手动组合: with-proxy install-fnm
+#
+
+set -e
+
+FNM_INSTALL_URL="https://fnm.vercel.app/install"
+INSTALL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --install-dir)
+      INSTALL_ARGS+=(--install-dir "$2")
+      shift 2
+      ;;
+    --skip-shell)
+      INSTALL_ARGS+=(--skip-shell)
+      shift
+      ;;
+    -h|--help)
+      echo "用法: $0 [--install-dir DIR] [--skip-shell]"
+      echo "      需要代理时: with-proxy $0 [选项...]"
+      exit 0
+      ;;
+    *)
+      echo "未知选项: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if ! command -v curl &>/dev/null; then
+  echo "[✗] 需要 curl，请先安装: sudo apt install curl" >&2
+  exit 1
+fi
+
+echo "[*] 正在安装 fnm ..."
+curl -fsSL "$FNM_INSTALL_URL" | bash -s -- "${INSTALL_ARGS[@]}"
+
+echo ""
+echo "[✓] fnm 安装完成。请确保已将 fnm 初始化加入 shell 配置，例如："
+echo "    eval \"\$(fnm env)\""
+echo "    若未自动写入，请把上面一行加入 ~/.bashrc 或 ~/.zshrc 后 source 一次。"

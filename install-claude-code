@@ -1,0 +1,482 @@
+#!/bin/bash
+#
+# install-claude-code.sh - Claude Code 一键安装脚本（完整增强版）
+# 功能: Node.js 检查 + Claude Code 安装 + API 配置 + 插件可选 + CI/CD 支持
+# 用法: ./install-claude-code [--api-key KEY] [--ci] [-v]
+#       ./install-claude-code [KEY]   # 第二个参数即 API Key
+#       需要代理时: with-proxy ./install-claude-code [KEY]
+# 文档: https://your-docs/claude-code-setup
+#
+
+# ┌─────────────────────────────────────────────────────────────────────────
+# │ 🔐 API Key 配置（优先级：--api-key/位置参数 > 硬编码 > 交互输入）
+# │    不输入则仅安装，不写入 API 配置。
+# │    硬编码：取消下方注释并填入 Key（⚠️ 勿提交到 Git）
+# └─────────────────────────────────────────────────────────────────────────
+
+
+set -eo pipefail
+
+
+# =============================================================================
+# 配置区域
+# =============================================================================
+readonly MIN_NODE_VERSION=18
+readonly RECOMMENDED_NODE_VERSION=20
+readonly CLAUDE_NPM_URL="https://gaccode.com/claudecode/install"
+readonly STATUSLINE_PLUGIN_URL="https://gaccode.com/claudecode/install/statusline-plugin"
+readonly NPM_REGISTRY="https://registry.npmmirror.com/"
+readonly ANTHROPIC_BASE_URL="https://gaccode.com/claudecode"
+readonly CLAUDE_CONFIG_FILE="$HOME/.claude.json"
+# readonly HARDCODED_API_KEY="sk-ant-oat01-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+
+# 颜色输出控制
+if [[ "${NO_COLOR:-}" != "1" ]] && [[ -t 1 ]]; then
+    readonly RED='\033[0;31m'
+    readonly GREEN='\033[0;32m'
+    readonly YELLOW='\033[0;33m'
+    readonly BLUE='\033[0;34m'
+    readonly GRAY='\033[0;90m'
+    readonly NC='\033[0m'
+else
+    readonly RED='' GREEN='' YELLOW='' BLUE='' GRAY='' NC=''
+fi
+
+# =============================================================================
+# 全局变量
+# =============================================================================
+API_KEY=""
+CI_MODE=0
+VERBOSE=0
+
+# =============================================================================
+# 工具函数
+# =============================================================================
+log_info()    { echo -e "${BLUE}[ℹ]${NC} $*"; }
+log_success() { echo -e "${GREEN}[✓]${NC} $*"; }
+log_warn()    { echo -e "${YELLOW}[⚠]${NC} $*"; }
+log_error()   { echo -e "${RED}[✗]${NC} $*" >&2; }
+log_debug()   { [[ $VERBOSE -eq 1 ]] && echo -e "${GRAY}[•]${NC} $*" || true; }
+
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+# =============================================================================
+# 参数解析
+# =============================================================================
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --api-key)
+                [[ -z "${2:-}" ]] && { log_error "--api-key 需要下一个参数"; exit 1; }
+                API_KEY="$2"
+                shift 2
+                ;;
+            --ci)
+                CI_MODE=1; shift
+                ;;
+            -v|--verbose)
+                VERBOSE=1; shift
+                ;;
+            -h|--help)
+                show_help; exit 0
+                ;;
+            *)
+                # 第一个非选项参数视为 API Key（第二个参数）
+                if [[ -z "$API_KEY" && "$1" != --* ]]; then
+                    API_KEY="$1"
+                    shift
+                else
+                    log_error "未知参数: $1"; show_help; exit 1
+                fi
+                ;;
+        esac
+    done
+
+    # 优先级：已解析的 --api-key/位置参数 > 硬编码
+    if [[ -z "$API_KEY" && -n "${HARDCODED_API_KEY:-}" ]]; then
+        API_KEY="$HARDCODED_API_KEY"
+    fi
+}
+
+show_help() {
+    cat << EOF
+Claude Code 一键安装脚本 v1.2
+
+用法: $0 [OPTIONS] [API_KEY]
+      $0 [OPTIONS] --api-key KEY
+
+  API Key 优先级：--api-key 下一参数 > 第一个位置参数 > 硬编码 > 交互输入
+  不输入则仅安装 Claude Code，不写入 API 配置。
+
+选项:
+  --api-key KEY    下一参数为 API Key（也可直接写位置参数）
+  --ci             CI/CD 模式：静默安装，无交互，不配置时也不退出
+  -v, --verbose    显示详细调试信息
+  -h, --help       显示此帮助信息
+
+示例:
+  $0 sk-ant-oat01-xxxxx
+  $0 --api-key sk-ant-oat01-xxxxx
+  $0 --ci
+  $0                  # 交互提示输入 Key，直接回车则仅安装
+EOF
+}
+
+# =============================================================================
+# Node.js 检查与安装
+# =============================================================================
+get_node_major_version() {
+    node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/'
+}
+
+check_nodejs_version() {
+    if ! command_exists node; then
+        return 1
+    fi
+    local current_ver
+    current_ver=$(get_node_major_version)
+    if [[ "$current_ver" -lt "$MIN_NODE_VERSION" ]]; then
+        return 2
+    fi
+    return 0
+}
+
+install_nodejs_ubuntu() {
+    log_info "添加 NodeSource 仓库 (Node.js ${RECOMMENDED_NODE_VERSION} LTS)..."
+    curl -fsSL "https://deb.nodesource.com/setup_${RECOMMENDED_NODE_VERSION}.x" | sudo bash - >/dev/null 2>&1
+    log_info "安装 Node.js..."
+    sudo apt-get install -y nodejs >/dev/null 2>&1
+    log_success "Node.js 安装完成"
+}
+
+install_nodejs_fedora() {
+    log_info "安装 Node.js (dnf)..."
+    sudo dnf install -y nodejs >/dev/null 2>&1
+    log_success "Node.js 安装完成"
+}
+
+install_nodejs_arch() {
+    log_info "安装 Node.js (pacman)..."
+    sudo pacman -S --noconfirm nodejs npm >/dev/null 2>&1
+    log_success "Node.js 安装完成"
+}
+
+install_nodejs() {
+    if command_exists apt-get; then
+        install_nodejs_ubuntu
+    elif command_exists dnf; then
+        install_nodejs_fedora
+    elif command_exists pacman; then
+        install_nodejs_arch
+    else
+        log_error "不支持的发行版，请手动安装 Node.js ≥ v$MIN_NODE_VERSION"
+        log_info "参考: https://nodejs.org/"
+        return 1
+    fi
+}
+
+ensure_nodejs() {
+    log_info "检查 Node.js 环境..."
+    
+    check_nodejs_version
+    local check_result=$?
+    
+    if [[ $check_result -eq 0 ]]; then
+        local ver=$(node --version)
+        local npm_ver=$(npm --version)
+        log_success "Node.js $ver + npm $npm_ver 符合要求"
+        return 0
+    fi
+    
+    if [[ $check_result -eq 1 ]]; then
+        log_warn "Node.js 未安装"
+    else
+        local current=$(get_node_major_version)
+        log_warn "Node.js v$current 版本过低 (需要 ≥ v$MIN_NODE_VERSION)"
+    fi
+    
+    # 非 CI 模式下询问
+    if [[ $CI_MODE -eq 0 ]]; then
+        echo ""
+        log_info "建议安装 Node.js v$RECOMMENDED_NODE_VERSION (LTS)"
+        read -rp "是否自动安装? [Y/n] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            install_nodejs || return 1
+        else
+            log_error "请先手动安装 Node.js ≥ v$MIN_NODE_VERSION"
+            return 1
+        fi
+    else
+        # CI 模式直接尝试安装
+        log_info "CI 模式：尝试自动安装 Node.js..."
+        install_nodejs || {
+            log_error "CI 模式下 Node.js 安装失败，请确保环境已预装 Node.js ≥ v$MIN_NODE_VERSION"
+            return 1
+        }
+    fi
+    
+    # 最终验证
+    if ! command_exists node || ! command_exists npm; then
+        log_error "Node.js 或 npm 安装失败"
+        return 1
+    fi
+    
+    log_success "Node.js $(node --version) 就绪"
+    return 0
+}
+
+# =============================================================================
+# Claude Code 安装与验证
+# =============================================================================
+install_claude_code() {
+    log_info "安装 Claude Code (全局)..."
+    log_debug "npm install -g $CLAUDE_NPM_URL --registry=$NPM_REGISTRY --force"
+    
+    if npm install -g "$CLAUDE_NPM_URL" --registry="$NPM_REGISTRY" --force >/dev/null 2>&1; then
+        log_success "Claude Code 安装成功"
+        return 0
+    else
+        log_error "安装失败，请检查:"
+        echo -e "  • 网络连接 (能否访问 gaccode.com)"
+        echo -e "  • npm 配置 (registry 是否可达)"
+        echo -e "  • 代理设置 (如需: export http_proxy=...)"
+        return 1
+    fi
+}
+
+verify_claude() {
+    log_info "验证 Claude Code..."
+    if command_exists claude; then
+        local ver
+        ver=$(claude --version 2>/dev/null || echo "unknown")
+        log_success "Claude Code v$ver 就绪"
+        return 0
+    else
+        log_error "claude 命令未找到，请检查:"
+        echo -e "  • npm 全局安装路径是否在 \$PATH 中"
+        echo -e "  • 执行: echo \$PATH"
+        echo -e "  • 尝试: source ~/.bashrc 或重启终端"
+        return 1
+    fi
+}
+
+# =============================================================================
+# API Key 配置
+# =============================================================================
+configure_api_key() {
+    local api_key="$1"
+    [[ -z "$api_key" ]] && return 1
+    
+    # 🔐 安全警告：硬编码 Key 检测
+    if [[ -n "${HARDCODED_API_KEY:-}" && "$api_key" == "$HARDCODED_API_KEY" ]]; then
+        log_warn "⚠️  检测到使用硬编码 API Key"
+        log_warn "   建议：生产环境改用 --api-key 或环境变量传递"
+        log_warn "   操作：完成后请重新注释 HARDCODED_API_KEY 行"
+        log_warn "   参考：https://docs.github.com/en/code-security/secret-scanning"
+        echo ""
+    fi
+    
+    log_info "配置 API Key..."
+    
+    # 创建配置目录
+    mkdir -p "$(dirname "$CLAUDE_CONFIG_FILE")"
+    
+    # 读取/初始化配置
+    local existing_config="{}"
+    if [[ -f "$CLAUDE_CONFIG_FILE" ]]; then
+        existing_config=$(cat "$CLAUDE_CONFIG_FILE" 2>/dev/null || echo "{}")
+        if ! echo "$existing_config" | jq empty 2>/dev/null; then
+            log_warn "现有配置文件格式无效，将创建新配置"
+            existing_config="{}"
+        fi
+    fi
+    
+    # 提取 Key 后 20 位作为标识（避免存储完整 Key）
+    local key_suffix="${api_key: -20}"
+    
+    # 更新配置：批准该 API Key
+    local new_config
+    new_config=$(echo "$existing_config" | jq --arg key "$key_suffix" '
+        (. // {}) | 
+        .customApiKeyResponses.approved |= ([.[]?, $key] | unique)
+    ')
+    
+    # 原子写入
+    echo "$new_config" | jq '.' > "${CLAUDE_CONFIG_FILE}.tmp"
+    mv "${CLAUDE_CONFIG_FILE}.tmp" "$CLAUDE_CONFIG_FILE"
+    chmod 600 "$CLAUDE_CONFIG_FILE"
+    
+    log_success "API Key 已批准 (标识: ...$key_suffix)"
+    return 0
+}
+
+configure_env_vars() {
+    log_info "配置环境变量..."
+    
+    local shell_rc="$HOME/.bashrc"
+    [[ -f "$HOME/.zshrc" ]] && shell_rc="$HOME/.zshrc"
+    [[ -f "$HOME/.fish/config.fish" ]] && shell_rc="$HOME/.fish/config.fish"
+    
+    local env_entries=(
+        "export ANTHROPIC_BASE_URL=\"$ANTHROPIC_BASE_URL\""
+        "export CLAUDE_LAUNCHER_QUIET=1"
+    )
+    
+    for entry in "${env_entries[@]}"; do
+        if ! grep -qF "$entry" "$shell_rc" 2>/dev/null; then
+            echo -e "\n# Claude Code 配置 (auto-generated)">$shell_rc.tmp
+            grep -v "^# Claude Code 配置" "$shell_rc" 2>/dev/null >> "$shell_rc.tmp" || true
+            echo -e "\n$entry" >> "$shell_rc.tmp"
+            mv "$shell_rc.tmp" "$shell_rc"
+            log_debug "已添加: $entry -> $shell_rc"
+        fi
+    done
+    
+    # 当前会话立即生效
+    export ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL"
+    export CLAUDE_LAUNCHER_QUIET=1
+    
+    log_success "环境变量已配置 (当前会话 + $shell_rc)"
+}
+
+# =============================================================================
+# 可选组件
+# =============================================================================
+install_statusline_plugin() {
+    [[ $CI_MODE -eq 1 ]] && return 0
+    
+    echo ""
+    log_info "状态栏插件可显示: 剩余积分 | 会话消耗 | 时间倍率"
+    read -rp "是否安装状态栏插件? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        log_info "安装状态栏插件..."
+        if npm install -g "$STATUSLINE_PLUGIN_URL" --registry="$NPM_REGISTRY" --force >/dev/null 2>&1; then
+            log_success "状态栏插件安装成功"
+            log_info "在 Claude Code 中按 Ctrl+O 可切换显示"
+        else
+            log_warn "插件安装失败，可稍后手动安装:"
+            echo -e "  ${GRAY}npm install -g $STATUSLINE_PLUGIN_URL --registry=$NPM_REGISTRY${NC}"
+        fi
+    fi
+}
+
+setup_stream_relay_alias() {
+    [[ $CI_MODE -eq 1 ]] && return 0
+    
+    echo ""
+    log_info "💡 Stream Relay 可提升网络稳定性，节省带宽高达 96%"
+    read -rp "是否添加 claude 别名 (含 --enable-stream-relay)? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        local shell_rc="$HOME/.bashrc"
+        [[ -f "$HOME/.zshrc" ]] && shell_rc="$HOME/.zshrc"
+        [[ -f "$HOME/.fish/config.fish" ]] && shell_rc="$HOME/.fish/config.fish"
+        
+        local alias_cmd="alias claude='claude --enable-stream-relay'"
+        if [[ "$shell_rc" == *.fish ]]; then
+            alias_cmd="alias claude 'claude --enable-stream-relay'"
+        fi
+        
+        if ! grep -qF "alias claude=" "$shell_rc" 2>/dev/null; then
+            echo -e "\n# Claude Code 快捷别名\n$alias_cmd" >> "$shell_rc"
+            log_info "别名已添加到 $shell_rc"
+            log_info "执行 'source $shell_rc' 或重启终端生效"
+        else
+            log_warn "别名配置已存在"
+        fi
+    fi
+}
+
+# =============================================================================
+# 信息展示
+# =============================================================================
+show_usage_tips() {
+    echo ""
+    echo -e "${BLUE}════════════════════════════════${NC}"
+    echo -e "${GREEN}🎉 安装完成！${NC}"
+    echo -e "${GRAY}快速开始:${NC}"
+    echo -e "  1. 重载配置:  ${BLUE}source ~/.bashrc${NC}  ${GRAY}# 或 ~/.zshrc / ~/.fish/config.fish${NC}"
+    echo -e "  2. 进入项目:  ${BLUE}cd your-project${NC}"
+    echo -e "  3. 启动:      ${BLUE}claude${NC}"
+    echo ""
+    echo -e "${GRAY}推荐开启:${NC}"
+    echo -e "  • 流中继优化: ${BLUE}claude --enable-stream-relay${NC}  ${GRAY}# 提升网络稳定性，节省带宽${NC}"
+    echo -e "  • 跳过权限确认: ${BLUE}claude --dangerously-skip-permissions${NC}  ${GRAY}# 按需使用${NC}"
+    echo ""
+    
+    if [[ -n "$API_KEY" ]]; then
+        echo -e "${GRAY}已自动配置:${NC}"
+        echo -e "  • ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL"
+        echo -e "  • API Key 已批准 (标识: ...${API_KEY: -20})"
+        echo -e "  • 静默模式已启用 (CLAUDE_LAUNCHER_QUIET=1)"
+        echo ""
+    fi
+    
+    echo -e "${GRAY}常用命令:${NC}"
+    echo -e "  ${BLUE}claude --help${NC}                         # 查看帮助"
+    echo -e "  ${BLUE}claude --version${NC}                      # 查看版本"
+    echo -e "  ${BLUE}claude --enable-stream-relay${NC}          # 启用流中继"
+    echo -e "  ${BLUE}claude --dangerously-skip-permissions${NC}  # 跳过权限确认"
+    echo -e "  ${BLUE}CLAUDE_LAUNCHER_QUIET=0 claude${NC}        # 临时关闭静默模式"
+    echo ""
+    
+    echo -e "${GRAY}故障排查:${NC}"
+    echo -e "  • 命令未找到: 检查 npm 全局路径: ${BLUE}npm config get prefix${NC}"
+    echo -e "  • 网络超时:    配置代理后重试: ${BLUE}export http_proxy=http://...${NC}"
+    echo -e "  • 权限问题:    使用 ${BLUE}npm config set prefix ~/.npm-global${NC} 避免 sudo"
+    echo -e "${BLUE}════════════════════════════════${NC}"
+}
+
+# =============================================================================
+# 主流程
+# =============================================================================
+main() {
+    parse_args "$@"
+    
+    # 开场
+    echo -e "${BLUE}╔════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║  Claude Code 安装脚本 v1.2      ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════╝${NC}"
+    echo -e "${GRAY}文档: https://your-docs/claude-code-setup${NC}"
+    echo ""
+    
+    # 1. API Key：已由 parse_args 得到 --api-key/位置参数/硬编码；仍为空则交互输入
+    if [[ -z "$API_KEY" && $CI_MODE -eq 0 ]]; then
+        echo -e "${GRAY}未提供 API Key，可直接回车仅安装不配置，或输入 Key 后回车。${NC}"
+        read -rp "API Key: " -r API_KEY
+        # 去除首尾空格
+        API_KEY="${API_KEY#"${API_KEY%%[![:space:]]*}"}"
+        API_KEY="${API_KEY%"${API_KEY##*[![:space:]]}"}"
+    fi
+    # CI 模式且无 Key：不退出，继续仅安装
+    
+    # 2. Node.js 环境
+    ensure_nodejs || exit 1
+    
+    # 3. 安装 Claude Code
+    install_claude_code || exit 1
+    
+    # 4. 验证安装
+    verify_claude || exit 1
+    
+    # 5. API 配置（如果提供了 Key）
+    if [[ -n "$API_KEY" ]]; then
+        configure_api_key "$API_KEY"
+        configure_env_vars
+    fi
+    
+    # 6. 可选组件（非 CI 模式）
+    install_statusline_plugin
+    setup_stream_relay_alias
+    
+    # 7. 完成提示
+    show_usage_tips
+}
+
+# =============================================================================
+# 执行入口
+# =============================================================================
+main "$@"
