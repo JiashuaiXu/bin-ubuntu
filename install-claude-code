@@ -26,8 +26,8 @@ readonly RECOMMENDED_NODE_VERSION=20
 readonly CLAUDE_NPM_URL="https://gaccode.com/claudecode/install"
 readonly STATUSLINE_PLUGIN_URL="https://gaccode.com/claudecode/install/statusline-plugin"
 readonly NPM_REGISTRY="https://registry.npmmirror.com/"
-readonly ANTHROPIC_BASE_URL="https://gaccode.com/claudecode"
 readonly CLAUDE_CONFIG_FILE="$HOME/.claude.json"
+ANTHROPIC_BASE_URL="https://gaccode.com/claudecode"
 # readonly HARDCODED_API_KEY="sk-ant-oat01-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 
