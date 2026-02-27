@@ -16,37 +16,43 @@ chmod +x download
 或（若已有 download）：
 
 ```bash
-./download -x "https://github.com/JiashuaiXu/bin-ubuntu/raw/main/download"
+./download "https://github.com/JiashuaiXu/bin-ubuntu/raw/main/download"
 ```
 
-**之后用 download 下载其他脚本（支持 GitHub 页面链接，自动 blob→raw）：**
+**之后用 download 下载其他脚本（直接贴链接，自动 blob→raw 并 chmod +x）：**
 
 ```bash
-# 下载并赋予执行权限（适合脚本）
-./download -x "https://github.com/JiashuaiXu/bin-ubuntu/blob/main/install-claude-code"
+./download "https://github.com/JiashuaiXu/bin-ubuntu/blob/main/install-claude-code"
 ./install-claude-code
 ```
 
 ```bash
-# 仅下载
 ./download "https://github.com/JiashuaiXu/bin-ubuntu/blob/main/with-proxy"
-chmod +x with-proxy
+./with-proxy curl -s ifconfig.me
 ```
 
 **与代理组合使用：**
 
 ```bash
-with-proxy ./download -x "https://github.com/JiashuaiXu/bin-ubuntu/raw/main/install-fnm"
+with-proxy ./download "https://github.com/JiashuaiXu/bin-ubuntu/raw/main/install-fnm"
 ./install-fnm
 ```
 
 ```bash
-# 或先 with-proxy 再执行任意命令
 with-proxy ./install-fnm
 ```
 
-**说明：** `download -x <url>` 表示下载后自动 `chmod +x`；可直接粘贴 GitHub 页面链接（含 `blob`），脚本会转为 raw 地址下载。
+**说明：** 直接 `download <url>` 即可，会下载并赋予执行权限；可粘贴 GitHub 页面链接（含 `blob`），脚本会自动转为 raw 下载。
 
 ## Windows
 
 在 WSL 或 Git Bash 中执行上述命令；未装 curl 可：`winget install curl.curl`。
+
+## 参数用法速查
+
+| 脚本 | 用法 |
+|------|------|
+| `download` | `download <url>` 或 `download <url> [输出文件名]` |
+| `install-claude-code` | `install-claude-code [API_KEY]` 或 `install-claude-code --api-key <KEY>`，无 Key 时交互输入 |
+
+更多选项可执行 `./脚本名 --help` 查看。
